@@ -1,0 +1,47 @@
+# ---- Secrets (NEVER commit) ----
+.env
+.env.*
+!.env.production.example
+**/.env
+**/.env.local
+**/.env.*.local
+
+# ---- Dependencies ----
+node_modules/
+**/node_modules/
+
+# ---- Build output ----
+**/dist/
+**/.next/
+**/build/
+**/out/
+**/*.tsbuildinfo
+
+# ---- Prisma generated client ----
+**/generated/prisma/
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Caddy runtime data (certs) ----
+caddy_data/
+caddy_config/
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Sandbox test artifacts ----
+.dockerignore-test
+.sandbox-write-test
+
+# ---- Misc ----
+coverage/
+.temp
+.tmp

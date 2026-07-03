@@ -1,0 +1,21 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Customer storefront
+{$WEB_DOMAIN}, www.{$WEB_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy web:3000
+}
+
+# Admin panel
+{$ADMIN_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy admin:3000
+}
+
+# API
+{$API_DOMAIN} {
+	encode gzip zstd
+	reverse_proxy api:3000
+}
