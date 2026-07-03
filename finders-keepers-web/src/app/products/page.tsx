@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Filter, X } from "lucide-react";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 
 import { Navbar } from "@/components/layout/navbar";
 import { Button, ButtonLink } from "@/components/ui/button";
@@ -19,7 +19,7 @@ const sortOptions = [
   { label: "Price: High to Low", value: "price_desc" },
 ];
 
-export default function ProductsPage() {
+function ProductsPageContent() {
   const searchParams = useSearchParams();
 
   const search = searchParams.get("search") || "";
@@ -256,5 +256,13 @@ export default function ProductsPage() {
         </div>
       ) : null}
     </main>
+  );
+}
+
+export default function ProductsPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-[#f8f6f1]" />}>
+      <ProductsPageContent />
+    </Suspense>
   );
 }
