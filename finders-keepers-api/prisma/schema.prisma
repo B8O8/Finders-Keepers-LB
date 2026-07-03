@@ -232,6 +232,8 @@ model ProductVariant {
   plu     String?
   barcode String?
 
+  posProductId String? @unique
+
   price     Decimal  @db.Decimal(10, 2)
   costPrice Decimal? @db.Decimal(10, 2)
   weight    Decimal? @db.Decimal(10, 2)
