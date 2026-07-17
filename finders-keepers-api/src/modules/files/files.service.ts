@@ -4,51 +4,39 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Prisma, StorageType } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
 import { ActivityLogsService } from '../activity-logs/activity-logs.service';
 import { LocalStorageService } from './local-storage.service';
+import { MinioStorageService } from './minio-storage.service';
 import { UpdateFileDto } from './dto/update-file.dto';
 import { UploadFileDto } from './dto/upload-file.dto';
 
 /**
  * Media management.
  *
- * New uploads are written to the local Docker volume (StorageType.LOCAL).
- * Historical Supabase-hosted assets keep working untouched: their rows stay
- * StorageType.SUPABASE and their stored absolute URLs continue to resolve, so
- * nothing needs migrating and no image 404s during rollout.
+ * New uploads go to MinIO (StorageType.MINIO), served publicly at
+ * <PUBLIC_MEDIA_BASE_URL>/uploads/... via Caddy.
  *
- * Supabase remains configured only so those legacy files can still be deleted.
+ * Two older backends remain readable but are never written to again:
+ *  - LOCAL    - the Docker volume MinIO replaced. Kept as the rollback path.
+ *  - SUPABASE - the original host. Its SDK has been removed, so such rows can
+ *               no longer be deleted from remote storage; none exist in
+ *               production. The enum value stays because PostgreSQL cannot
+ *               cleanly drop one, and because dropping it would rewrite history
+ *               on any row that ever held it.
  */
 @Injectable()
 export class FilesService {
   private readonly logger = new Logger(FilesService.name);
-  private readonly supabase: SupabaseClient | null;
-  private readonly legacyBucket: string;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLogsService: ActivityLogsService,
     private readonly localStorage: LocalStorageService,
-  ) {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    this.legacyBucket = process.env.SUPABASE_BUCKET || 'products';
-
-    // Optional now. Uploads no longer depend on Supabase, so a deployment
-    // without these variables is valid; only legacy deletes are affected.
-    this.supabase =
-      supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
-
-    if (!this.supabase) {
-      this.logger.log(
-        'Supabase not configured - legacy remote assets cannot be deleted from storage',
-      );
-    }
-  }
+    private readonly minioStorage: MinioStorageService,
+  ) {}
 
   /** Never expose the raw row: title falls back to the original filename. */
   private present<T extends { title: string | null; fileName: string }>(file: T) {
@@ -61,12 +49,12 @@ export class FilesService {
     }
 
     // Validation (MIME + extension + size) happens inside the storage service.
-    const { key, url, folder } = await this.localStorage.save(file, dto.entity);
+    const { key, url, folder } = await this.minioStorage.save(file, dto.entity);
 
     try {
       const fileAsset = await this.prisma.fileAsset.create({
         data: {
-          storageType: StorageType.LOCAL,
+          storageType: StorageType.MINIO,
           bucket: folder,
           path: key,
           url,
@@ -91,7 +79,7 @@ export class FilesService {
           fileName: file.originalname,
           mimeType: file.mimetype,
           size: file.size,
-          storageType: StorageType.LOCAL,
+          storageType: StorageType.MINIO,
           relatedEntity: dto.entity,
           relatedEntityId: dto.entityId,
         },
@@ -99,8 +87,9 @@ export class FilesService {
 
       return this.present(fileAsset);
     } catch (error) {
-      // Don't leave an orphan file on disk if the row could not be written.
-      await this.localStorage.remove(key).catch(() => undefined);
+      // Don't leave an orphan object in the bucket if the row could not be
+      // written: the database is the source of truth for what exists.
+      await this.minioStorage.remove(key).catch(() => undefined);
       throw error;
     }
   }
@@ -214,19 +203,25 @@ export class FilesService {
     });
 
     if (sharing === 0) {
-      if (fileAsset.storageType === StorageType.LOCAL) {
-        await this.localStorage.remove(fileAsset.path);
-      } else if (this.supabase) {
-        const { error } = await this.supabase.storage
-          .from(fileAsset.bucket || this.legacyBucket)
-          .remove([fileAsset.path]);
-
-        if (error) {
-          // The row is already gone; log rather than fail the request.
+      // The row is already gone at this point, so a storage failure is logged
+      // rather than thrown: failing the request would tell the admin the delete
+      // did not happen, when in fact the asset is gone from the application.
+      try {
+        if (fileAsset.storageType === StorageType.MINIO) {
+          await this.minioStorage.remove(fileAsset.path);
+        } else if (fileAsset.storageType === StorageType.LOCAL) {
+          await this.localStorage.remove(fileAsset.path);
+        } else {
+          // SUPABASE: the SDK is gone. Production has no such rows; if one ever
+          // appears, say so plainly instead of pretending the object was removed.
           this.logger.warn(
-            `Failed to remove legacy remote object ${fileAsset.path}: ${error.message}`,
+            `Row deleted but remote object left in place - Supabase support has been removed: ${fileAsset.path}`,
           );
         }
+      } catch (error: any) {
+        this.logger.warn(
+          `Failed to remove stored object ${fileAsset.path}: ${error?.message}`,
+        );
       }
     }
 

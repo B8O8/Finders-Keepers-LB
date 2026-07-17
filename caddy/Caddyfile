@@ -14,14 +14,34 @@
 	reverse_proxy admin:3000
 }
 
-# API (also serves uploaded media at /uploads/*, straight from the API's
-# persistent Docker volume - no separate media host or DNS record needed)
+# API, and uploaded media at /uploads/* - one host, no separate media domain.
 {$API_DOMAIN} {
 	encode gzip zstd
 
-	# Uploaded images are immutable (UUID filenames), so they cache hard.
+	# Media is served by MinIO, not the API.
+	#
+	# The bucket is named "uploads", and MinIO serves objects at /<bucket>/<key>,
+	# so /uploads/product/<uuid>.jpg maps onto the object exactly. No rewrite,
+	# no path stripping, and every URL already stored in the database keeps
+	# working. Renaming the bucket breaks every image on the site.
+	#
+	# Only anonymous GetObject is granted by the bucket policy (never
+	# ListBucket), so this path cannot be used to enumerate the media library.
 	@uploads path /uploads/*
+
+	# Images are immutable (server-generated UUID filenames), so they cache hard.
 	header @uploads Cache-Control "public, max-age=2592000, immutable"
+
+	# Uploads are read-only over the public edge. MinIO's own auth would reject
+	# an unsigned write anyway, but refusing here keeps the S3 API off the
+	# internet entirely rather than relying on a policy being right.
+	@uploads_write {
+		path /uploads/*
+		not method GET HEAD
+	}
+	respond @uploads_write 405
+
+	reverse_proxy @uploads minio:9000
 
 	reverse_proxy api:3000
 }

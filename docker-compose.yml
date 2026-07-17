@@ -18,12 +18,37 @@ services:
     networks:
       - internal
 
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      # Named volume => uploaded media survives container replacement and
+      # rebuilds. Back this up alongside the database (see DEPLOY.md).
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # No ports published. The API reaches MinIO over the internal network, and
+    # public reads arrive through Caddy. The admin console (9001) is deliberately
+    # NOT exposed - reach it with an SSH tunnel if you need it:
+    #   ssh -L 9001:localhost:9001 root@<server>  (after adding a temporary port)
+    networks:
+      - internal
+
   api:
     build:
       context: ./finders-keepers-api
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     environment:
       NODE_ENV: production
@@ -33,21 +58,27 @@ services:
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       CUSTOMER_JWT_SECRET: ${CUSTOMER_JWT_SECRET}
       CUSTOMER_JWT_REFRESH_SECRET: ${CUSTOMER_JWT_REFRESH_SECRET}
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      SUPABASE_BUCKET: ${SUPABASE_BUCKET}
+      # Object storage for uploaded media. MINIO_ENDPOINT is internal-only:
+      # public reads go through Caddy at https://${API_DOMAIN}/uploads/...
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-uploads}
       MAIL_HOST: ${MAIL_HOST}
       MAIL_PORT: ${MAIL_PORT}
       MAIL_USER: ${MAIL_USER}
       MAIL_PASSWORD: ${MAIL_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
       FRONTEND_URL: https://${WEB_DOMAIN}
-      # Uploaded media: stored on a persistent named volume, served at /uploads
-      UPLOADS_DIR: /app/uploads
+      # Public base for media URLs. Unchanged by the move to MinIO: the bucket is
+      # named "uploads", so MinIO serves each object at the same /uploads/<key>
+      # path the disk backend used, and no stored URL had to be rewritten.
       PUBLIC_MEDIA_BASE_URL: https://${API_DOMAIN}
+      # Read-only fallback for any pre-MinIO StorageType.LOCAL row.
+      UPLOADS_DIR: /app/uploads
     volumes:
-      # Named volume => survives container rebuild/replacement and restarts.
-      # Backed up separately from the database (see DEPLOY.md).
+      # Retained so existing LOCAL assets stay readable and the previous release
+      # can be rolled back to. MinIO owns all new uploads (minio_data).
       - uploads:/app/uploads
     networks:
       - internal
@@ -103,6 +134,9 @@ services:
 
 volumes:
   pgdata:
+  minio_data:
+  # Legacy: pre-MinIO StorageType.LOCAL assets. Do not remove while any LOCAL
+  # row exists, or those images 404.
   uploads:
   caddy_data:
   caddy_config:

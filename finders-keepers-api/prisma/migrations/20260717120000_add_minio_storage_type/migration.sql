@@ -1,0 +1,18 @@
+-- Additive: MinIO becomes the storage backend for new uploads.
+--
+-- Only a new enum value is added. Nothing is dropped:
+--   * SUPABASE and LOCAL must survive, or any existing row holding them becomes
+--     unreadable. PostgreSQL cannot remove an enum value without recreating the
+--     type and rewriting every column that uses it.
+--   * No data is rewritten. Existing rows keep their storageType and their
+--     absolute URLs, so no image can 404 as a result of this migration.
+--
+-- IF NOT EXISTS makes this safe to re-run and safe on a database where a
+-- previous partial deploy already added it.
+--
+-- Note on transactions: Prisma wraps each migration in one. PostgreSQL 12+
+-- permits ALTER TYPE ... ADD VALUE inside a transaction provided the new value
+-- is not USED in that same transaction. This migration only declares it - the
+-- first row written with 'MINIO' comes later, from the application - so it is
+-- safe here. Adding an INSERT/UPDATE using 'MINIO' below would fail at runtime.
+ALTER TYPE "StorageType" ADD VALUE IF NOT EXISTS 'MINIO';

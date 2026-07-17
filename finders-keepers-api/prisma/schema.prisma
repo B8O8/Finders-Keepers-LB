@@ -44,9 +44,17 @@ enum DiscountTargetType {
   CATEGORY
 }
 
+// Where an asset's bytes live. Only MINIO is written to now; the other two are
+// read-only history that must keep resolving. PostgreSQL cannot cleanly drop an
+// enum value, and removing one would corrupt any row that ever held it, so they
+// stay.
 enum StorageType {
+  /// Original host. SDK removed; no rows remain in production.
   SUPABASE
+  /// The Docker volume MinIO replaced. Kept as the rollback path.
   LOCAL
+  /// Current backend for every new upload.
+  MINIO
 }
 
 enum NotificationChannel {
