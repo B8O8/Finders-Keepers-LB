@@ -20,28 +20,32 @@
 
 	# Media is served by MinIO, not the API.
 	#
+	# These MUST be `handle` blocks, not two bare `reverse_proxy` lines. Caddy
+	# sorts directives rather than running them in file order, and a
+	# matcher-less `reverse_proxy` matches every request - so a plain
+	# `reverse_proxy api:3000` swallows /uploads/* no matter what precedes it.
+	# `handle` blocks are mutually exclusive and evaluated in order: first match
+	# wins, everything else falls through.
+	#
 	# The bucket is named "uploads", and MinIO serves objects at /<bucket>/<key>,
-	# so /uploads/product/<uuid>.jpg maps onto the object exactly. No rewrite,
+	# so /uploads/product/<uuid>.jpg maps onto the object exactly - no rewrite,
 	# no path stripping, and every URL already stored in the database keeps
 	# working. Renaming the bucket breaks every image on the site.
-	#
-	# Only anonymous GetObject is granted by the bucket policy (never
-	# ListBucket), so this path cannot be used to enumerate the media library.
-	@uploads path /uploads/*
+	handle /uploads/* {
+		# Read-only at the edge. The bucket policy already grants anonymous
+		# GetObject and nothing else, but refusing here keeps the S3 write API
+		# off the internet entirely rather than trusting a policy to stay right.
+		@write not method GET HEAD
+		respond @write 405
 
-	# Images are immutable (server-generated UUID filenames), so they cache hard.
-	header @uploads Cache-Control "public, max-age=2592000, immutable"
+		# Images are immutable (server-generated UUID filenames), so cache hard.
+		header Cache-Control "public, max-age=2592000, immutable"
 
-	# Uploads are read-only over the public edge. MinIO's own auth would reject
-	# an unsigned write anyway, but refusing here keeps the S3 API off the
-	# internet entirely rather than relying on a policy being right.
-	@uploads_write {
-		path /uploads/*
-		not method GET HEAD
+		reverse_proxy minio:9000
 	}
-	respond @uploads_write 405
 
-	reverse_proxy @uploads minio:9000
-
-	reverse_proxy api:3000
+	# Everything else is the API.
+	handle {
+		reverse_proxy api:3000
+	}
 }
