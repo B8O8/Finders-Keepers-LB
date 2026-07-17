@@ -150,18 +150,39 @@ export class CategoriesService {
     return category;
   }
 
+  /**
+   * Deleting a category NEVER deletes products.
+   *
+   * The category must first be emptied: products linked through the
+   * ProductCategory join table block the delete, exactly as the previous
+   * single-category rule did. Once empty, deleting only removes join rows
+   * (ON DELETE CASCADE on the join table) and nulls primaryCategoryId
+   * (ON DELETE SET NULL), leaving every product intact.
+   *
+   * Child categories are also protected: they would otherwise be silently
+   * re-parented to null by the schema's SetNull rule.
+   */
   async delete(id: string, adminId?: string) {
     const category = await this.findOne(id);
 
-    const productsCount = await this.prisma.product.count({
-      where: {
-        categoryId: id,
-      },
+    const productsCount = await this.prisma.productCategory.count({
+      where: { categoryId: id },
     });
 
     if (productsCount > 0) {
       throw new BadRequestException(
-        'Cannot delete category with products',
+        `Cannot delete a category that still has ${productsCount} product(s). ` +
+          'Reassign or remove them first.',
+      );
+    }
+
+    const childrenCount = await this.prisma.category.count({
+      where: { parentId: id },
+    });
+
+    if (childrenCount > 0) {
+      throw new BadRequestException(
+        'Cannot delete a category that still has sub-categories',
       );
     }
 

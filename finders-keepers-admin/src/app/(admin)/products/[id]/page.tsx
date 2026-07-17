@@ -14,8 +14,10 @@ import Table from '@/components/ui/Table';
 import { useToast } from '@/components/ui/Toast';
 import { productsApi, variantsApi, filesApi, categoriesApi } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
-import { AdminRole, Product, ProductVariant, ProductImage, Category } from '@/types';
+import { AdminRole, Product, ProductVariant, ProductImage, Category, FileAsset } from '@/types';
 import { formatCurrency } from '@/lib/utils';
+import MediaCard from '@/components/media/MediaCard';
+import MediaMetaModal from '@/components/media/MediaMetaModal';
 import ProductForm from '../ProductForm';
 
 // ─── Variant Form ──────────────────────────────────────────────────────────────
@@ -106,6 +108,7 @@ function ImageCard({
   onSetPrimary,
   onRemove,
   onAssignVariant,
+  onEditDetails,
 }: {
   img: ProductImage;
   variants: ProductVariant[];
@@ -113,67 +116,73 @@ function ImageCard({
   onSetPrimary: () => void;
   onRemove: () => void;
   onAssignVariant: (variantId: string | null) => void;
+  onEditDetails: () => void;
 }) {
   const assignedVariant = variants.find((v) => v.id === img.variantId);
 
   return (
-    <div className="rounded-lg border border-slate-200 overflow-hidden bg-slate-50 flex flex-col">
-      {/* Image */}
-      <div className="relative group aspect-square">
-        <img src={img.file?.url} alt="" className="h-full w-full object-cover" />
-        {img.isPrimary && (
-          <div className="absolute top-1.5 left-1.5 bg-indigo-600 rounded-full p-0.5">
-            <Star size={10} className="text-white" fill="white" />
-          </div>
-        )}
-        {img.variantId && (
-          <div className="absolute top-1.5 right-1.5 bg-amber-500 rounded-full p-0.5">
-            <Tag size={10} className="text-white" />
-          </div>
-        )}
-        {canEdit && (
-          <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5">
-            {!img.isPrimary && (
-              <button
-                onClick={onSetPrimary}
-                className="text-[11px] text-white bg-indigo-600 rounded px-2 py-1 hover:bg-indigo-700 transition-colors"
-              >
-                Set Primary
-              </button>
-            )}
-            <button
-              onClick={onRemove}
-              className="text-[11px] text-white bg-red-600 rounded px-2 py-1 hover:bg-red-700 transition-colors"
-            >
-              Remove
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Variant selector */}
-      {canEdit && variants.length > 0 && (
-        <div className="p-2 border-t border-slate-200">
-          <select
-            className="w-full text-[11px] border border-slate-200 rounded px-1.5 py-1 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            value={img.variantId ?? ''}
-            onChange={(e) => onAssignVariant(e.target.value || null)}
-          >
-            <option value="">All variants</option>
-            {variants.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name || 'Default'}
-              </option>
-            ))}
-          </select>
-          {assignedVariant && (
-            <p className="mt-1 text-[10px] text-amber-600 font-medium truncate">
-              Tagged: {assignedVariant.name || 'Default'}
-            </p>
+    <MediaCard
+      file={img.file}
+      canEdit={canEdit}
+      onEditDetails={onEditDetails}
+      badges={
+        <>
+          {img.isPrimary && (
+            <div className="absolute top-1.5 left-1.5 bg-indigo-600 rounded-full p-0.5">
+              <Star size={10} className="text-white" fill="white" />
+            </div>
           )}
-        </div>
-      )}
-    </div>
+          {img.variantId && (
+            <div className="absolute top-1.5 right-1.5 bg-amber-500 rounded-full p-0.5">
+              <Tag size={10} className="text-white" />
+            </div>
+          )}
+        </>
+      }
+      actions={
+        <>
+          {!img.isPrimary && (
+            <button
+              type="button"
+              onClick={onSetPrimary}
+              className="text-[11px] text-white bg-indigo-600 rounded px-2 py-1 hover:bg-indigo-700 transition-colors"
+            >
+              Set Primary
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-[11px] text-white bg-red-600 rounded px-2 py-1 hover:bg-red-700 transition-colors"
+          >
+            Remove
+          </button>
+        </>
+      }
+      footer={
+        canEdit && variants.length > 0 ? (
+          <div className="p-2 border-t border-slate-200">
+            <select
+              className="w-full text-[11px] border border-slate-200 rounded px-1.5 py-1 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              value={img.variantId ?? ''}
+              onChange={(e) => onAssignVariant(e.target.value || null)}
+            >
+              <option value="">All variants</option>
+              {variants.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name || 'Default'}
+                </option>
+              ))}
+            </select>
+            {assignedVariant && (
+              <p className="mt-1 text-[10px] text-amber-600 font-medium truncate">
+                Tagged: {assignedVariant.name || 'Default'}
+              </p>
+            )}
+          </div>
+        ) : null
+      }
+    />
   );
 }
 
@@ -191,6 +200,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
   const [editVariant, setEditVariant] = useState<ProductVariant | null>(null);
   const [deleteVariantId, setDeleteVariantId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [metaFile, setMetaFile] = useState<FileAsset | null>(null);
 
   const { data: product, isLoading } = useQuery<Product>({
     queryKey: ['product', id],
@@ -366,6 +376,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                   onAssignVariant={(variantId) =>
                     assignVariantMutation.mutate({ imageId: img.id, variantId })
                   }
+                  onEditDetails={() => setMetaFile(img.file)}
                 />
               ))}
             </div>
@@ -476,6 +487,14 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
           />
         </div>
       </div>
+
+      {/* Image details (title / alt / caption) */}
+      <MediaMetaModal
+        file={metaFile}
+        open={!!metaFile}
+        onClose={() => setMetaFile(null)}
+        onSaved={() => queryClient.invalidateQueries({ queryKey: ['product', id] })}
+      />
 
       {/* Edit Product */}
       <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Product" size="lg">

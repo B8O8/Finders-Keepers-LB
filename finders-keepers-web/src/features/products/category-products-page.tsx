@@ -7,13 +7,11 @@ import { Navbar } from "@/components/layout/navbar";
 import { ButtonLink } from "@/components/ui/button";
 import { ProductCard } from "@/features/products/product-card";
 import { useCategories, useProductsByCategory } from "@/features/products/hooks";
-
-function formatCategoryTitle(slug: string) {
-  return slug
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
+import {
+  categoryTitleFromSlug,
+  findCategoryBySlug,
+  flattenCategories,
+} from "@/lib/category";
 
 export function CategoryProductsPage({ slug }: { slug: string }) {
   const searchParams = useSearchParams();
@@ -28,7 +26,11 @@ export function CategoryProductsPage({ slug }: { slug: string }) {
 
   const { data: categories } = useCategories();
 
-  const title = formatCategoryTitle(slug);
+  // Resolved from the whole tree, so subcategory pages work too.
+  const category = findCategoryBySlug(categories, slug);
+  const allCategories = flattenCategories(categories);
+
+  const title = category?.name ?? categoryTitleFromSlug(slug);
 
   return (
     <main className="min-h-screen bg-[#f8f6f1]">
@@ -57,18 +59,21 @@ export function CategoryProductsPage({ slug }: { slug: string }) {
           </div>
         </div>
 
+        {/* Flattened, so subcategories are reachable and the active pill
+            highlights correctly when the current page IS a subcategory. */}
         <div className="mb-8 flex flex-wrap gap-3">
-          {categories?.map((category) => (
+          {allCategories.map((item) => (
             <Link
-              key={category.id}
-              href={`/category/${category.slug}`}
+              key={item.id}
+              href={`/category/${item.slug}`}
+              aria-current={item.slug === slug ? "page" : undefined}
               className={`rounded-full border px-5 py-2 text-sm font-semibold transition ${
-                category.slug === slug
+                item.slug === slug
                   ? "border-black bg-black text-white"
                   : "border-black/10 bg-white text-black hover:border-black"
               }`}
             >
-              {category.name}
+              {item.name}
             </Link>
           ))}
         </div>

@@ -14,8 +14,14 @@
 	reverse_proxy admin:3000
 }
 
-# API
+# API (also serves uploaded media at /uploads/*, straight from the API's
+# persistent Docker volume - no separate media host or DNS record needed)
 {$API_DOMAIN} {
 	encode gzip zstd
+
+	# Uploaded images are immutable (UUID filenames), so they cache hard.
+	@uploads path /uploads/*
+	header @uploads Cache-Control "public, max-age=2592000, immutable"
+
 	reverse_proxy api:3000
 }

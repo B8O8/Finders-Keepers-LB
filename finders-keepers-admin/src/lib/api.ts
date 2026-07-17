@@ -181,13 +181,65 @@ export const activityLogsApi = {
 };
 
 export const filesApi = {
-  upload: (file: File) => {
+  /**
+   * Uploads to the API's own storage (Docker volume), not an external provider.
+   * Optional metadata is stored alongside the file so the admin can show a real
+   * title and the storefront can render meaningful alt text.
+   */
+  upload: (
+    file: File,
+    meta?: { entity?: string; entityId?: string; title?: string; altText?: string; caption?: string },
+  ) => {
     const form = new FormData();
     form.append('file', file);
+
+    if (meta?.entity) form.append('entity', meta.entity);
+    if (meta?.entityId) form.append('entityId', meta.entityId);
+    if (meta?.title) form.append('title', meta.title);
+    if (meta?.altText) form.append('altText', meta.altText);
+    if (meta?.caption) form.append('caption', meta.caption);
+
     return api.post('/files/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then((r) => r.data);
   },
+  findAll: (params?: Record<string, unknown>) =>
+    api.get('/files', { params }).then((r) => r.data),
+  findOne: (id: string) => api.get(`/files/${id}`).then((r) => r.data),
+  /** Where an image is still used - checked before offering delete. */
+  references: (id: string) => api.get(`/files/${id}/references`).then((r) => r.data),
+  updateMetadata: (id: string, data: { title?: string; altText?: string; caption?: string }) =>
+    api.patch(`/files/${id}`, data).then((r) => r.data),
+  delete: (id: string) => api.delete(`/files/${id}`).then((r) => r.data),
+};
+
+export const discountsApi = {
+  findAll: (params?: Record<string, unknown>) =>
+    api.get('/discounts', { params }).then((r) => r.data),
+  findOne: (id: string) => api.get(`/discounts/${id}`).then((r) => r.data),
+  /** Affected products/variants + estimated wishlist notifications. */
+  preview: (id: string) => api.get(`/discounts/${id}/preview`).then((r) => r.data),
+  create: (data: Record<string, unknown>) => api.post('/discounts', data).then((r) => r.data),
+  update: (id: string, data: Record<string, unknown>) =>
+    api.patch(`/discounts/${id}`, data).then((r) => r.data),
+  activate: (id: string) => api.patch(`/discounts/${id}/activate`).then((r) => r.data),
+  deactivate: (id: string) => api.patch(`/discounts/${id}/deactivate`).then((r) => r.data),
+  restore: (id: string) => api.patch(`/discounts/${id}/restore`).then((r) => r.data),
+  /** Archive (soft delete) - history is preserved. */
+  archive: (id: string) => api.delete(`/discounts/${id}`).then((r) => r.data),
+};
+
+export const notificationsApi = {
+  findAll: (params?: Record<string, unknown>) =>
+    api.get('/notifications', { params }).then((r) => r.data),
+  stats: (discountId?: string) =>
+    api.get('/notifications/stats', { params: { discountId } }).then((r) => r.data),
+  retry: (id: string) => api.post(`/notifications/${id}/retry`).then((r) => r.data),
+  retryAllFailed: (discountId?: string) =>
+    api.post('/notifications/retry-failed', { discountId }).then((r) => r.data),
+  process: () => api.post('/notifications/process').then((r) => r.data),
+  enqueue: (discountId: string) =>
+    api.post(`/notifications/enqueue/${discountId}`).then((r) => r.data),
 };
 
 export const permissionsApi = {

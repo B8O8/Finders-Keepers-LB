@@ -33,6 +33,37 @@ enum PaymentMethod {
   ONLINE_CARD
 }
 
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum DiscountTargetType {
+  PRODUCT
+  VARIANT
+  CATEGORY
+}
+
+enum StorageType {
+  SUPABASE
+  LOCAL
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+}
+
+enum NotificationType {
+  WISHLIST_SALE
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
 model Admin {
   id           String    @id @default(uuid())
   email        String    @unique
@@ -70,7 +101,9 @@ model ActivityLog {
 
 model FileAsset {
   id       String  @id @default(uuid())
+  /// For LOCAL storage this is the uploads sub-folder; for SUPABASE the bucket.
   bucket   String
+  /// Relative storage key only — never an absolute server filesystem path.
   path     String  @unique
   url      String
   fileName String
@@ -78,6 +111,15 @@ model FileAsset {
   size     Int
   entity   String?
   entityId String?
+
+  /// Existing rows keep SUPABASE so their URLs continue to resolve.
+  /// New uploads are written to the local Docker volume as LOCAL.
+  storageType StorageType @default(SUPABASE)
+
+  /// Editable media metadata. title falls back to fileName in the API layer.
+  title   String?
+  altText String?
+  caption String?
 
   categoryImage Category[]
   productImages ProductImage[]
@@ -102,6 +144,9 @@ model Customer {
   addresses CustomerAddress[]
   orders    Order[]
   reviews ProductReview[]
+
+  wishlistItems WishlistItem[]
+  notifications Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -179,7 +224,15 @@ model Category {
   parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   children Category[] @relation("CategoryHierarchy")
 
-  products Product[]
+  /// DEPRECATED legacy single-category link (see Product.categoryId).
+  products Product[] @relation("LegacyProductCategory")
+
+  /// Deleting a category never deletes products: it only removes the join rows
+  /// and nulls primaryCategoryId.
+  productCategories ProductCategory[]
+  primaryProducts   Product[]         @relation("PrimaryCategory")
+
+  discountTargets DiscountTarget[]
 
   isActive  Boolean @default(true)
   sortOrder Int     @default(0)
@@ -198,25 +251,39 @@ model Product {
   shortDescription String?
   description      String?
 
+  /// DEPRECATED: superseded by the ProductCategory join table. Retained for one
+  /// release so the previous image can be redeployed safely. Do not read in new code.
   categoryId String?
-  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  category   Category? @relation("LegacyProductCategory", fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// Used for breadcrumbs / SEO. Validated to always be one of the categories
+  /// linked via productCategories.
+  primaryCategoryId String?
+  primaryCategory   Category? @relation("PrimaryCategory", fields: [primaryCategoryId], references: [id], onDelete: SetNull)
+
+  productCategories ProductCategory[]
 
   variants   ProductVariant[]
   images     ProductImage[]
   orderItems OrderItem[]
   reviews ProductReview[]
 
+  discountTargets DiscountTarget[]
+  wishlistItems   WishlistItem[]
+  notifications   Notification[]
+
   isActive   Boolean @default(true)
   isFeatured Boolean @default(false)
 
   seoTitle       String?
   seoDescription String?
-  
+
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([categoryId])
+  @@index([primaryCategoryId])
   @@index([slug])
 }
 
@@ -235,10 +302,20 @@ model ProductVariant {
   posProductId String? @unique
 
   price     Decimal  @db.Decimal(10, 2)
+  /// Optional "was" price shown struck-through. Purely presentational: real
+  /// sale pricing is derived from Discount records by PricingService.
+  compareAtPrice Decimal? @db.Decimal(10, 2)
   costPrice Decimal? @db.Decimal(10, 2)
   weight    Decimal? @db.Decimal(10, 2)
 
   stock Int @default(0)
+
+  /// Backorder: when true this variant can be ordered at zero stock.
+  /// Stock is floored at 0 and never goes negative; the shortfall is recorded
+  /// on OrderItem.backorderQuantity.
+  allowBackorder   Boolean   @default(false)
+  backorderMessage String?
+  availabilityDate DateTime?
 
   isDefault Boolean @default(false)
   isActive  Boolean @default(true)
@@ -246,6 +323,10 @@ model ProductVariant {
   cartItems  CartItem[]
   orderItems OrderItem[]
   images     ProductImage[]
+
+  discountTargets DiscountTarget[]
+  wishlistItems   WishlistItem[]
+  notifications   Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -371,14 +452,31 @@ model OrderItem {
 
   quantity Int
 
-  unitPrice  Decimal @db.Decimal(10, 2)
-  totalPrice Decimal @db.Decimal(10, 2)
+  /// ---- Immutable price/discount snapshot ----
+  /// Written once at checkout from PricingService. Editing or deleting a
+  /// Discount later must never change historical orders, so nothing here is
+  /// recomputed and discountId is intentionally NOT a foreign key.
+  regularPrice   Decimal  @default(0) @db.Decimal(10, 2)
+  unitPrice      Decimal  @db.Decimal(10, 2)
+  discountAmount Decimal  @default(0) @db.Decimal(10, 2)
+  discountId     String?
+  discountLabel  String?
+  totalPrice     Decimal  @db.Decimal(10, 2)
+
+  /// Backorder snapshot: quantity that was not covered by stock at purchase.
+  isBackorder       Boolean @default(false)
+  backorderQuantity Int     @default(0)
+
+  /// Category context + image at time of purchase (display-safe history).
+  categorySnapshot Json?
+  imageUrl         String?
 
   createdAt DateTime @default(now())
 
   @@index([orderId])
   @@index([productId])
   @@index([variantId])
+  @@index([isBackorder])
 }
 
 model ProductReview {
@@ -405,10 +503,195 @@ model ProductReview {
   @@index([isApproved])
 }
 
+/// A discount is never written onto product prices. Final prices are always
+/// derived at read time by PricingService from active Discount records, so
+/// editing or deleting a discount can never corrupt historical orders.
+model Discount {
+  id String @id @default(uuid())
+
+  name        String
+  description String?
+  publicLabel String?
+
+  type  DiscountType
+  value Decimal      @db.Decimal(10, 2)
+
+  startsAt DateTime
+  endsAt   DateTime?
+
+  isActive Boolean @default(true)
+
+  minOrderAmount    Decimal? @db.Decimal(10, 2)
+  maxDiscountAmount Decimal? @db.Decimal(10, 2)
+
+  /// Higher priority wins. Ties broken by createdAt ASC for determinism.
+  priority  Int     @default(0)
+  stackable Boolean @default(false)
+
+  createdByAdminId String?
+
+  /// Soft delete. Archived discounts never price anything, but are retained so
+  /// notification history and order snapshots stay explainable.
+  archivedAt DateTime?
+
+  /// Set once the wishlist-sale notifications for this discount have been
+  /// queued. Lets the scheduler pick up newly-live discounts without the
+  /// discounts module depending on the notifications module. Re-activating a
+  /// discount clears it, but the dedupeKey unique index still guarantees a
+  /// customer is never emailed twice for the same discount.
+  notificationsEnqueuedAt DateTime?
+
+  targets       DiscountTarget[]
+  notifications Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startsAt, endsAt])
+  @@index([priority])
+  @@index([createdByAdminId])
+  @@index([archivedAt])
+  @@index([notificationsEnqueuedAt])
+}
+
+/// Polymorphic targeting: a discount may target any number of products,
+/// variants and/or categories.
+model DiscountTarget {
+  id String @id @default(uuid())
+
+  discountId String
+  discount   Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+
+  targetType DiscountTargetType
+
+  /// Non-null mirror of whichever *Id below is set. Exists because Postgres
+  /// treats NULLs as distinct in unique indexes, which would let duplicate
+  /// targets through a composite unique over nullable columns.
+  targetId String
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([discountId, targetType, targetId])
+  @@index([discountId])
+  @@index([productId])
+  @@index([variantId])
+  @@index([categoryId])
+}
+
+/// Many-to-many product <-> category membership. Replaces Product.categoryId,
+/// which is retained (deprecated) for one release for safe rollback.
+model ProductCategory {
+  id String @id @default(uuid())
+
+  productId  String
+  categoryId String
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, categoryId])
+  @@index([productId])
+  @@index([categoryId])
+}
+
+model WishlistItem {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Null means "any variant of this product".
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// Non-null mirror of variantId ("" = any variant). Required because a
+  /// unique index over a nullable variantId would not dedupe product-level rows.
+  variantKey String @default("")
+
+  createdAt DateTime @default(now())
+
+  @@unique([customerId, productId, variantKey])
+  @@index([customerId])
+  @@index([productId])
+  @@index([variantId])
+}
+
+/// Durable outbox. Rows are created inside the discount transaction but sent
+/// by a background processor, so notification failures never roll back a
+/// discount. The dedupe unique constraint guarantees idempotency.
+model Notification {
+  id String @id @default(uuid())
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  channel NotificationChannel @default(EMAIL)
+  type    NotificationType    @default(WISHLIST_SALE)
+  status  NotificationStatus  @default(PENDING)
+
+  discountId String?
+  discount   Discount? @relation(fields: [discountId], references: [id], onDelete: SetNull)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  variantId String?
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  /// Immutable snapshot of what was advertised (prices, labels, URL).
+  payload Json?
+
+  /// Idempotency key, built from customerId + discountId + productId +
+  /// variantId + channel. A single non-null unique column is used deliberately:
+  /// a composite unique over nullable columns would NOT dedupe, because
+  /// Postgres treats every NULL as distinct. Enqueue uses createMany with
+  /// skipDuplicates, so re-running the job can never produce a second email.
+  dedupeKey String @unique
+
+  attempts Int       @default(0)
+  error    String?
+  sentAt   DateTime?
+  readAt   DateTime?
+
+  /// ---- Multi-worker claim fields ----
+  /// A worker claims a batch atomically with UPDATE ... FOR UPDATE SKIP LOCKED,
+  /// so two replicas can never pick up the same row.
+  claimedAt   DateTime?
+  claimedBy   String?
+  /// Bounded exponential backoff: a failed row is not retried before this.
+  nextAttemptAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([customerId])
+  @@index([discountId])
+  @@index([createdAt])
+  /// Drives the pending-job lookup: status + due time + attempts.
+  @@index([status, nextAttemptAt, attempts])
+  /// Finds abandoned claims (worker died mid-batch).
+  @@index([status, claimedAt])
+}
+
 model RolePermission {
   id         String    @id @default(uuid())
   role       AdminRole
-  permission String    // e.g. "products:delete", "orders:update_status"
+  permission String // e.g. "products:delete", "orders:update_status"
   allowed    Boolean   @default(false)
 
   createdAt DateTime @default(now())

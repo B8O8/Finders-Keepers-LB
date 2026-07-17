@@ -1,0 +1,23 @@
+# Test-only overlay. NOT used in production.
+#
+# The production stack deliberately never publishes Postgres: it is reachable
+# only inside the Docker network. The e2e suite runs on the host, so it needs a
+# host port - but only ever bound to 127.0.0.1, never 0.0.0.0, so the database
+# is not exposed beyond this machine.
+#
+# Compose only reads docker-compose.yml unless this file is passed explicitly,
+# so nothing here can leak into a normal `docker compose up -d`:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d postgres
+#
+# Port choice matters more than it looks:
+#   5432/5433 are routinely taken by a locally installed Postgres or another
+#     project's container - and colliding there does not merely fail, it points
+#     the suite at someone else's database.
+#   49152-65535 is the Windows ephemeral range, chunks of which Hyper-V/WSL
+#     reserve; binding there fails with "forbidden by its access permissions".
+# 15432 sits below the ephemeral range and outside any conventional service.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"

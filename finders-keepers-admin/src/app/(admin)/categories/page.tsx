@@ -11,9 +11,10 @@ import Input from '@/components/ui/Input';
 import Textarea from '@/components/ui/Textarea';
 import Select from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
+import MediaUploadField from '@/components/media/MediaUploadField';
 import { categoriesApi } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
-import { AdminRole, Category } from '@/types';
+import { AdminRole, Category, FileAsset } from '@/types';
 import { useForm } from 'react-hook-form';
 
 function CategoryForm({
@@ -26,6 +27,7 @@ function CategoryForm({
   onSuccess: () => void;
 }) {
   const [loading, setLoading] = useState(false);
+  const [image, setImage] = useState<FileAsset | null>(category?.image ?? null);
   const { register, handleSubmit, formState: { errors } } = useForm({
     defaultValues: {
       name: category?.name ?? '',
@@ -43,10 +45,14 @@ function CategoryForm({
   const onSubmit = async (data: Record<string, unknown>) => {
     setLoading(true);
     try {
+      // The image lives outside react-hook-form (it's uploaded, not typed), so
+      // it's merged in here. `null` clears an existing image; the API's
+      // emptyToUndefined transform would swallow an empty string.
+      const payload = { ...data, imageId: image?.id ?? null };
       if (category) {
-        await categoriesApi.update(category.id, data);
+        await categoriesApi.update(category.id, payload);
       } else {
-        await categoriesApi.create(data);
+        await categoriesApi.create(payload);
       }
       onSuccess();
     } finally {
@@ -59,6 +65,14 @@ function CategoryForm({
       <Input label="Name" placeholder="e.g. Electronics" required {...register('name')} />
       <Input label="Slug" placeholder="electronics" {...register('slug')} />
       <Textarea label="Description" placeholder="Category description..." {...register('description')} />
+      <MediaUploadField
+        label="Category Image"
+        value={image}
+        onChange={setImage}
+        entity="Category"
+        entityId={category?.id}
+        hint="Shown on category pages and in navigation."
+      />
       <Select
         label="Parent Category"
         options={parentOptions}
@@ -111,9 +125,17 @@ export default function CategoriesPage() {
     <div key={cat.id}>
       <div className={`flex items-center gap-3 px-4 py-3 hover:bg-slate-50 border-b border-slate-100 last:border-0 ${depth > 0 ? 'pl-10' : ''}`}>
         {depth > 0 && <ChevronRight size={14} className="text-slate-400 -ml-4 shrink-0" />}
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 shrink-0">
-          <Tag size={14} className="text-indigo-600" />
-        </div>
+        {cat.image?.url ? (
+          <img
+            src={cat.image.url}
+            alt={cat.image.altText ?? ''}
+            className="h-8 w-8 shrink-0 rounded-lg object-cover bg-slate-100"
+          />
+        ) : (
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 shrink-0">
+            <Tag size={14} className="text-indigo-600" />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-slate-900">{cat.name}</p>
           <p className="text-xs text-slate-500 font-mono">/{cat.slug}</p>

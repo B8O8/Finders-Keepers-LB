@@ -12,7 +12,8 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { ButtonLink } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
+import { CartPreview } from "@/features/cart/cart-preview";
 import { useHydrated } from "@/hooks/use-hydrated";
 import { useAuthStore } from "@/stores/auth-store";
 import { useCartStore } from "@/stores/cart-store";
@@ -32,6 +33,10 @@ export function Navbar() {
   );
 
   const [search, setSearch] = useState("");
+
+  // Cart preview drawer. Opened from the cart button on both desktop and
+  // mobile; the drawer itself handles Escape, outside-click and route changes.
+  const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
 
   const [mobileMenuOpen, setMobileMenuOpen] =
     useState(false);
@@ -161,10 +166,16 @@ export function Navbar() {
               </ButtonLink>
             )}
 
-            <ButtonLink href="/cart">
+            <Button
+              type="button"
+              onClick={() => setCartPreviewOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={cartPreviewOpen}
+              aria-label={`Open cart, ${hydrated ? cartCount : 0} item(s)`}
+            >
               <ShoppingBag size={18} />
               Cart ({hydrated ? cartCount : 0})
-            </ButtonLink>
+            </Button>
           </div>
 
           <button
@@ -244,14 +255,18 @@ export function Navbar() {
                   {hydrated ? wishlistCount : 0})
                 </Link>
 
-                <Link
-                  href="/cart"
-                  onClick={closeMenu}
-                  className="block rounded-2xl bg-[#f8f6f1] px-5 py-4 font-medium"
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMenu();
+                    setCartPreviewOpen(true);
+                  }}
+                  aria-haspopup="dialog"
+                  className="block w-full rounded-2xl bg-[#f8f6f1] px-5 py-4 text-left font-medium"
                 >
                   Cart (
                   {hydrated ? cartCount : 0})
-                </Link>
+                </button>
 
                 {customer ? (
                   <Link
@@ -275,6 +290,10 @@ export function Navbar() {
           </div>
         </div>
       )}
+
+      {/* Cart preview drawer - prices come from the server, quantities from the
+          local cart store so +/- is instant. */}
+      <CartPreview open={cartPreviewOpen} onClose={() => setCartPreviewOpen(false)} />
     </>
   );
 }

@@ -6,6 +6,13 @@ export interface CartItem {
   variantId: string;
   name: string;
   image: string;
+  /**
+   * DISPLAY-ONLY snapshot taken when the item was added.
+   *
+   * Never use this for totals: it goes stale as soon as a discount changes.
+   * Real prices come from POST /storefront/price-cart, and checkout recalculates
+   * everything server-side regardless of what the client sends.
+   */
   price: number;
   quantity: number;
   variantName?: string;
@@ -17,7 +24,6 @@ interface CartState {
   removeItem: (variantId: string) => void;
   updateQuantity: (variantId: string, quantity: number) => void;
   clearCart: () => void;
-  getTotal: () => number;
   getCount: () => number;
 }
 
@@ -78,11 +84,6 @@ export const useCartStore = create<CartState>()(
         });
       },
 
-      getTotal: () =>
-        get().items.reduce(
-          (total, item) => total + item.price * item.quantity,
-          0,
-        ),
 
       getCount: () =>
         get().items.reduce((count, item) => count + item.quantity, 0),

@@ -11,6 +11,9 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useHydrated } from "@/hooks/use-hydrated";
 import { checkoutService } from "@/services/checkout.service";
+import { storefrontService } from "@/services/storefront.service";
+import { formatCurrency } from "@/lib/utils";
+import type { PricedCart } from "@/types/pricing";
 import { customerAddressesService } from "@/services/customer-addresses.service";
 import { useAuthStore } from "@/stores/auth-store";
 import { useCartStore } from "@/stores/cart-store";
@@ -22,7 +25,24 @@ export function CheckoutPage() {
   const customer = useAuthStore((state) => state.customer);
 
   const items = useCartStore((state) => state.items);
-  const total = useCartStore((state) => state.getTotal());
+  // The order total is always recalculated server-side at checkout. This screen
+  // must therefore show the SERVER's numbers, not the cart's cached ones, or the
+  // customer would confirm one figure and be charged another.
+  const cartKey = items.map((i) => `${i.variantId}:${i.quantity}`).join(",");
+
+  const { data: priced } = useQuery<PricedCart>({
+    queryKey: ["price-cart", cartKey],
+    queryFn: () =>
+      storefrontService.priceCart(
+        items.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+      ),
+    enabled: items.length > 0,
+    staleTime: 30_000,
+  });
+
+  const total =
+    priced?.summary.subtotal ??
+    items.reduce((acc, i) => acc + i.price * i.quantity, 0);
   const clearCart = useCartStore((state) => state.clearCart);
 
   const isLoggedIn = hydrated && !!customer;
@@ -469,13 +489,31 @@ export function CheckoutPage() {
                 </div>
 
                 <p className="font-semibold text-black">
-                  ${(item.price * item.quantity).toFixed(2)}
+                  {formatCurrency(
+                    priced?.items.find((l) => l.variantId === item.variantId)
+                      ?.lineTotal ?? item.price * item.quantity,
+                  )}
                 </p>
               </div>
             ))}
           </div>
 
           <hr className="my-6 border-black/10" />
+
+          {priced && priced.summary.discountTotal > 0 && (
+            <div className="mb-4 flex justify-between text-sm">
+              <span className="text-neutral-500">Discounts</span>
+              <span className="font-semibold text-green-700">
+                -{formatCurrency(priced.summary.discountTotal)}
+              </span>
+            </div>
+          )}
+
+          {priced?.summary.hasBackorderedItems && (
+            <p className="mb-4 rounded-xl bg-blue-50 p-3 text-xs text-blue-800">
+              Some items are on backorder and will ship when available.
+            </p>
+          )}
 
           <div className="flex justify-between text-sm text-neutral-500">
             <span>Delivery</span>
@@ -484,7 +522,7 @@ export function CheckoutPage() {
 
           <div className="mt-5 flex justify-between text-xl font-bold text-black">
             <span>Total</span>
-            <span>${total.toFixed(2)}</span>
+            <span>{formatCurrency(total)}</span>
           </div>
         </Card>
       </section>

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './database/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AdminsModule } from './modules/admins/admins.module';
@@ -22,12 +23,17 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { MailModule } from './modules/mail/mail.module';
 import { ProductReviewsModule } from './modules/product-reviews/product-reviews.module';
+import { DiscountsModule } from './modules/discounts/discounts.module';
+import { WishlistModule } from './modules/wishlist/wishlist.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    // Drives the notification outbox processor.
+    ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
     AdminsModule,
@@ -50,6 +56,9 @@ import { ProductReviewsModule } from './modules/product-reviews/product-reviews.
     DashboardModule,
     MailModule,
     ProductReviewsModule,
+    DiscountsModule,
+    WishlistModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

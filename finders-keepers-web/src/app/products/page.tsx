@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { ProductCard } from "@/features/products/product-card";
 import { RecentlyViewedSection } from "@/features/products/recently-viewed-section";
 import { useCategories, useProducts } from "@/features/products/hooks";
+import { findCategoryBySlug, flattenCategories } from "@/lib/category";
 
 const sortOptions = [
   { label: "Newest", value: "newest" },
@@ -38,9 +39,12 @@ function ProductsPageContent() {
 
   const { data: categories } = useCategories();
 
-  const activeCategory = categories?.find(
-    (category) => category.slug === categorySlug,
-  );
+  // The API returns a tree (top-level only at the root), so both the filter
+  // list and the active-category lookup must walk it — otherwise every
+  // subcategory is unreachable as a filter and its heading falls back to
+  // "Shop Products".
+  const allCategories = flattenCategories(categories);
+  const activeCategory = findCategoryBySlug(categories, categorySlug);
 
   function buildUrl(params: {
     category?: string;
@@ -86,7 +90,7 @@ function ProductsPageContent() {
             All Products
           </Link>
 
-          {categories?.map((category) => (
+          {allCategories.map((category) => (
             <Link
               key={category.id}
               href={buildUrl({

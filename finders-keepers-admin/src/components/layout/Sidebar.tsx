@@ -14,6 +14,8 @@ import {
   ScrollText,
   ChevronRight,
   Search,
+  Percent,
+  BellRing,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/auth.store';
@@ -26,6 +28,8 @@ const navItems = [
   { href: '/customers', label: 'Customers', icon: Users, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER] },
   { href: '/orders', label: 'Orders', icon: ShoppingCart, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER] },
   { href: '/reviews', label: 'Reviews', icon: Star, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER] },
+  { href: '/discounts', label: 'Discounts', icon: Percent, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER] },
+  { href: '/notifications', label: 'Sale Alerts', icon: BellRing, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER] },
   { href: '/admins', label: 'Admin Users', icon: Shield, roles: [AdminRole.SUPER_ADMIN] },
   { href: '/settings', label: 'Settings', icon: Settings, roles: [AdminRole.SUPER_ADMIN, AdminRole.ADMIN] },
   { href: '/activity-logs', label: 'Activity Logs', icon: ScrollText, roles: [AdminRole.SUPER_ADMIN] },

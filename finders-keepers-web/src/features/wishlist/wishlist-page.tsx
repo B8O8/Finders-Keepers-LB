@@ -2,18 +2,41 @@
 
 import Link from "next/link";
 import { Heart, Trash2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Navbar } from "@/components/layout/navbar";
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { PriceBlock, StockBadge } from "@/components/product/price-block";
 import { useHydrated } from "@/hooks/use-hydrated";
+import { storefrontService } from "@/services/storefront.service";
 import { useWishlistStore } from "@/stores/wishlist-store";
+import type { Product } from "@/types/product";
 
 export function WishlistPage() {
   const hydrated = useHydrated();
 
   const items = useWishlistStore((state) => state.items);
   const removeItem = useWishlistStore((state) => state.removeItem);
+
+  // The local store cached a price when the item was saved, which is stale the
+  // moment a discount starts. Since the whole point of a wishlist is being told
+  // when something goes on sale, the price here must come from the server.
+  const productIds = items.map((i) => i.productId);
+
+  const { data: priced } = useQuery<Product[]>({
+    queryKey: ["wishlist-prices", productIds.join(",")],
+    queryFn: () => storefrontService.priceProducts(productIds),
+    enabled: hydrated && productIds.length > 0,
+    staleTime: 30_000,
+  });
+
+  const liveFor = (productId: string) => {
+    const p = priced?.find((x) => x.id === productId);
+    if (!p) return null;
+    const variant = p.variants.find((v) => v.isDefault) || p.variants[0];
+    return variant ? { variant, product: p } : null;
+  };
 
   if (!hydrated) {
     return (
@@ -88,9 +111,29 @@ export function WishlistPage() {
               <div className="p-6">
                 <h2 className="text-xl font-bold text-black">{item.name}</h2>
 
-                <p className="mt-3 text-2xl font-bold text-black">
-                  ${item.price.toFixed(2)}
-                </p>
+                {(() => {
+                  const live = liveFor(item.productId);
+
+                  if (live?.variant.pricing) {
+                    return (
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <PriceBlock pricing={live.variant.pricing} size="md" />
+                        <StockBadge
+                          inStock={live.variant.inStock ?? live.variant.stock > 0}
+                          allowBackorder={!!live.variant.allowBackorder}
+                          backorderMessage={live.variant.backorderMessage}
+                        />
+                      </div>
+                    );
+                  }
+
+                  // Fallback only while live prices load / if the product is gone.
+                  return (
+                    <p className="mt-3 text-2xl font-bold text-black">
+                      ${item.price.toFixed(2)}
+                    </p>
+                  );
+                })()}
 
                 <div className="mt-6 flex gap-3">
                   <ButtonLink

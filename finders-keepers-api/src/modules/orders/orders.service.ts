@@ -13,7 +13,10 @@ import {
 
 import { PrismaService } from '../../database/prisma.service';
 import { ActivityLogsService } from '../activity-logs/activity-logs.service';
+import { DiscountsRepository } from '../discounts/discounts.repository';
+import { PricingService } from '../discounts/pricing.service';
 
+import { restockQuantity, splitQuantity } from './backorder.util';
 import { CheckoutDto } from './dto/checkout.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 
@@ -22,6 +25,8 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLogsService: ActivityLogsService,
+    private readonly pricing: PricingService,
+    private readonly discountsRepository: DiscountsRepository,
   ) {}
 
   private async generateOrderNumber(tx: Prisma.TransactionClient) {
@@ -48,7 +53,17 @@ export class OrdersService {
           include: {
             variant: {
               include: {
-                product: true,
+                product: {
+                  include: {
+                    productCategories: {
+                      include: { category: { select: { id: true, name: true, slug: true } } },
+                    },
+                    images: {
+                      include: { file: true },
+                      orderBy: { sortOrder: 'asc' },
+                    },
+                  },
+                },
               },
             },
           },
@@ -124,8 +139,25 @@ export class OrdersService {
       };
     }
 
+    // Prices are ALWAYS recalculated here from the database and the discount
+    // engine. Nothing the client submits is trusted.
+    const discounts = await this.discountsRepository.findActiveForPricing();
+
+    const regularSubtotal = cart.items.reduce(
+      (acc, item) => acc + Number(item.variant.price) * item.quantity,
+      0,
+    );
+
     return this.prisma.$transaction(async (tx) => {
+      const lines: {
+        item: (typeof cart.items)[number];
+        priced: ReturnType<PricingService['price']>;
+        deductable: number;
+        backorderQuantity: number;
+      }[] = [];
+
       let subtotal = 0;
+      let discountAmount = 0;
 
       for (const item of cart.items) {
         if (!item.variant.isActive || !item.variant.product.isActive) {
@@ -134,14 +166,41 @@ export class OrdersService {
           );
         }
 
-        if (item.variant.stock < item.quantity) {
+        // Out-of-stock is only allowed through when the variant opts in.
+        if (item.variant.stock < item.quantity && !item.variant.allowBackorder) {
           throw new BadRequestException(
             `Not enough stock for ${item.variant.product.name}`,
           );
         }
 
-        subtotal += Number(item.variant.price) * item.quantity;
+        const priced = this.pricing.price(
+          {
+            variantId: item.variant.id,
+            productId: item.variant.productId,
+            categoryIds: item.variant.product.productCategories.map(
+              (pc) => pc.categoryId,
+            ),
+            price: Number(item.variant.price),
+          },
+          discounts,
+          { orderSubtotal: regularSubtotal },
+        );
+
+        // Stock is floored at zero: only what exists is deducted and the
+        // shortfall is recorded as a backorder. See backorder.util.ts.
+        const { deductable, backorderQuantity } = splitQuantity(
+          item.variant.stock,
+          item.quantity,
+        );
+
+        subtotal += priced.finalPrice * item.quantity;
+        discountAmount += priced.discountAmount * item.quantity;
+
+        lines.push({ item, priced, deductable, backorderQuantity });
       }
+
+      subtotal = Number(subtotal.toFixed(2));
+      discountAmount = Number(discountAmount.toFixed(2));
 
       if (subtotal < orderMinimumAmount) {
         throw new BadRequestException(
@@ -158,8 +217,8 @@ export class OrdersService {
         deliveryFee = 0;
       }
 
-      const discountAmount = 0;
-      const totalAmount = subtotal + deliveryFee - discountAmount;
+      // subtotal already reflects discounts, so it is not subtracted twice.
+      const totalAmount = Number((subtotal + deliveryFee).toFixed(2));
 
       const order = await tx.order.create({
         data: {
@@ -185,7 +244,7 @@ export class OrdersService {
           addressSnapshot,
 
           items: {
-            create: cart.items.map((item) => ({
+            create: lines.map(({ item, priced, backorderQuantity }) => ({
               productId: item.variant.productId,
               variantId: item.variant.id,
               productName: item.variant.product.name,
@@ -194,8 +253,28 @@ export class OrdersService {
               plu: item.variant.plu,
               barcode: item.variant.barcode,
               quantity: item.quantity,
-              unitPrice: item.variant.price,
-              totalPrice: Number(item.variant.price) * item.quantity,
+
+              // Immutable snapshot. discountId is stored as a plain value (not
+              // a relation) so archiving or editing the discount later cannot
+              // rewrite history.
+              regularPrice: priced.regularPrice,
+              unitPrice: priced.finalPrice,
+              discountAmount: priced.discountAmount,
+              discountId: priced.discountId,
+              discountLabel: priced.discountLabel,
+              totalPrice: Number((priced.finalPrice * item.quantity).toFixed(2)),
+
+              isBackorder: backorderQuantity > 0,
+              backorderQuantity,
+
+              categorySnapshot: item.variant.product.productCategories.map(
+                (pc) => ({
+                  id: pc.category.id,
+                  name: pc.category.name,
+                  slug: pc.category.slug,
+                }),
+              ),
+              imageUrl: item.variant.product.images[0]?.file?.url ?? null,
             })),
           },
         },
@@ -210,16 +289,12 @@ export class OrdersService {
         },
       });
 
-      for (const item of cart.items) {
+      for (const { item, deductable } of lines) {
+        if (deductable <= 0) continue;
+
         await tx.productVariant.update({
-          where: {
-            id: item.variantId,
-          },
-          data: {
-            stock: {
-              decrement: item.quantity,
-            },
-          },
+          where: { id: item.variantId },
+          data: { stock: { decrement: deductable } },
         });
       }
 
@@ -460,13 +535,18 @@ export class OrdersService {
 
     const updated = await this.prisma.$transaction(async (tx) => {
       for (const item of order.items) {
+        // Only return what was actually taken (see backorder.util.ts).
+        const restock = restockQuantity(item.quantity, item.backorderQuantity);
+
+        if (restock <= 0) continue;
+
         await tx.productVariant.update({
           where: {
             id: item.variantId,
           },
           data: {
             stock: {
-              increment: item.quantity,
+              increment: restock,
             },
           },
         });

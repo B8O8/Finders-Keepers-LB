@@ -13,12 +13,122 @@ import { GetProductsDto } from './dto/get-products.dto';
 import { ReorderProductImagesDto } from './dto/reorder-product-images.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
+/**
+ * Shared read shape. `productCategories` replaces the old single `category`
+ * relation; `category` is still returned (from the deprecated column) so any
+ * client not yet updated keeps working during the transition.
+ */
+const PRODUCT_INCLUDE = {
+  category: true,
+  primaryCategory: true,
+  productCategories: { include: { category: true } },
+  variants: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
+  images: { include: { file: true }, orderBy: { sortOrder: 'asc' } },
+} satisfies Prisma.ProductInclude;
+
 @Injectable()
 export class ProductsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityLogsService: ActivityLogsService,
   ) {}
+
+  /**
+   * Categories may arrive as the new `categoryIds` array or the deprecated
+   * single `categoryId`. Normalising here keeps older API clients working.
+   */
+  private resolveCategoryIds(dto: {
+    categoryIds?: string[];
+    categoryId?: string;
+  }): string[] | undefined {
+    if (dto.categoryIds !== undefined) {
+      return Array.from(new Set(dto.categoryIds));
+    }
+    if (dto.categoryId) {
+      return [dto.categoryId];
+    }
+    return undefined;
+  }
+
+  private async assertCategoriesExist(categoryIds: string[]) {
+    if (!categoryIds.length) return;
+
+    const found = await this.prisma.category.count({
+      where: { id: { in: categoryIds } },
+    });
+
+    if (found !== categoryIds.length) {
+      throw new NotFoundException('One or more categories do not exist');
+    }
+  }
+
+  /** The primary category must be one the product actually belongs to. */
+  private resolvePrimaryCategoryId(
+    primaryCategoryId: string | undefined,
+    categoryIds: string[],
+  ): string | null {
+    if (!primaryCategoryId) {
+      return categoryIds.length ? categoryIds[0] : null;
+    }
+
+    if (!categoryIds.includes(primaryCategoryId)) {
+      throw new BadRequestException(
+        'primaryCategoryId must be one of the product categories',
+      );
+    }
+
+    return primaryCategoryId;
+  }
+
+  /** Rejects duplicate SKUs inside the payload and against other products. */
+  private async assertSkusAreUnique(
+    variants: { sku?: string }[],
+    excludeProductId?: string,
+  ) {
+    const skus = variants
+      .map((v) => v.sku)
+      .filter((sku): sku is string => !!sku && sku.trim() !== '');
+
+    const duplicatesInPayload = skus.filter(
+      (sku, i) => skus.indexOf(sku) !== i,
+    );
+
+    if (duplicatesInPayload.length) {
+      throw new BadRequestException(
+        `Duplicate SKU in payload: ${Array.from(new Set(duplicatesInPayload)).join(', ')}`,
+      );
+    }
+
+    if (!skus.length) return;
+
+    const clashing = await this.prisma.productVariant.findMany({
+      where: {
+        sku: { in: skus },
+        ...(excludeProductId ? { NOT: { productId: excludeProductId } } : {}),
+      },
+      select: { sku: true },
+    });
+
+    if (clashing.length) {
+      throw new BadRequestException(
+        `SKU already in use: ${clashing.map((c) => c.sku).join(', ')}`,
+      );
+    }
+  }
+
+  /** Exactly one default variant when variants exist. */
+  private resolveDefaultFlags<T extends { isDefault?: boolean }>(variants: T[]) {
+    const defaults = variants.filter((v) => v.isDefault);
+
+    if (defaults.length > 1) {
+      throw new BadRequestException('Only one default variant allowed');
+    }
+
+    return variants.map((variant, index) => ({
+      ...variant,
+      isDefault: variant.isDefault ?? (defaults.length === 0 && index === 0),
+    }));
+  }
 
   async create(dto: CreateProductDto, adminId?: string) {
     const existing = await this.prisma.product.findUnique({
@@ -29,60 +139,77 @@ export class ProductsService {
       throw new BadRequestException('Product slug already exists');
     }
 
-    if (dto.categoryId) {
-      const category = await this.prisma.category.findUnique({
-        where: { id: dto.categoryId },
-      });
-      if (!category) throw new NotFoundException('Category not found');
-    }
+    const categoryIds = this.resolveCategoryIds(dto) ?? [];
+    await this.assertCategoriesExist(categoryIds);
+
+    const primaryCategoryId = this.resolvePrimaryCategoryId(
+      dto.primaryCategoryId,
+      categoryIds,
+    );
 
     if (!dto.variants || dto.variants.length === 0) {
       throw new BadRequestException('At least one product variant is required');
     }
 
-    const defaultVariants = dto.variants.filter((v) => v.isDefault);
-    if (defaultVariants.length > 1) {
-      throw new BadRequestException('Only one default variant allowed');
-    }
+    await this.assertSkusAreUnique(dto.variants);
+    const variants = this.resolveDefaultFlags(dto.variants);
 
-    const product = await this.prisma.product.create({
-      data: {
-        name: dto.name,
-        slug: dto.slug,
-        shortDescription: dto.shortDescription,
-        description: dto.description,
-        categoryId: dto.categoryId,
-        isActive: dto.isActive ?? true,
-        isFeatured: dto.isFeatured ?? false,
-        seoTitle: dto.seoTitle,
-        seoDescription: dto.seoDescription,
-        variants: {
-          create: dto.variants.map((variant, index) => ({
-            name: variant.name,
-            sku: variant.sku,
-            plu: variant.plu,
-            barcode: variant.barcode,
-            price: variant.price,
-            costPrice: variant.costPrice,
-            stock: variant.stock ?? 0,
-            isDefault: variant.isDefault ?? (dto.variants.length === 1 && index === 0),
-          })),
+    const product = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({
+        data: {
+          name: dto.name,
+          slug: dto.slug,
+          shortDescription: dto.shortDescription,
+          description: dto.description,
+          // Legacy column kept in sync for one release so the previous
+          // application image can still read a product's category.
+          categoryId: primaryCategoryId,
+          primaryCategoryId,
+          isActive: dto.isActive ?? true,
+          isFeatured: dto.isFeatured ?? false,
+          seoTitle: dto.seoTitle,
+          seoDescription: dto.seoDescription,
+          productCategories: categoryIds.length
+            ? { create: categoryIds.map((categoryId) => ({ categoryId })) }
+            : undefined,
+          variants: {
+            create: variants.map((variant) => ({
+              name: variant.name,
+              sku: variant.sku,
+              plu: variant.plu,
+              barcode: variant.barcode,
+              posProductId: variant.posProductId,
+              price: variant.price,
+              compareAtPrice: variant.compareAtPrice,
+              costPrice: variant.costPrice,
+              weight: variant.weight,
+              stock: variant.stock ?? 0,
+              allowBackorder: variant.allowBackorder ?? false,
+              backorderMessage: variant.backorderMessage,
+              availabilityDate: variant.availabilityDate
+                ? new Date(variant.availabilityDate)
+                : null,
+              isDefault: variant.isDefault,
+              isActive: variant.isActive ?? true,
+            })),
+          },
+          images: dto.imageIds?.length
+            ? {
+                create: dto.imageIds.map((fileId, index) => ({
+                  fileId,
+                  sortOrder: index,
+                  isPrimary: index === 0,
+                })),
+              }
+            : undefined,
         },
-        images: dto.imageIds?.length
-          ? {
-              create: dto.imageIds.map((fileId, index) => ({
-                fileId,
-                sortOrder: index,
-                isPrimary: index === 0,
-              })),
-            }
-          : undefined,
-      },
-      include: {
-        category: true,
-        variants: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
-        images: { include: { file: true }, orderBy: { sortOrder: 'asc' } },
-      },
+        include: { variants: true, images: true },
+      });
+
+      // Variant-specific images can only be linked once variants have ids.
+      await this.linkVariantImages(tx, created.id, created.variants, variants);
+
+      return created;
     });
 
     await this.activityLogsService.create({
@@ -90,9 +217,55 @@ export class ProductsService {
       action: 'PRODUCT_CREATED',
       entity: 'Product',
       entityId: product.id,
+      metadata: { categoryIds, primaryCategoryId },
     });
 
-    return product;
+    return this.findOne(product.id);
+  }
+
+  /**
+   * Attaches images that belong to a specific variant. Reuses ProductImage
+   * (which already carries an optional variantId) rather than adding a table.
+   */
+  private async linkVariantImages(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    createdVariants: { id: string; name: string | null; sku: string | null }[],
+    payloadVariants: { sku?: string; name?: string; imageIds?: string[] }[],
+  ) {
+    let sortOrder = await tx.productImage.count({ where: { productId } });
+
+    for (let i = 0; i < payloadVariants.length; i++) {
+      const payload = payloadVariants[i];
+      if (!payload.imageIds?.length) continue;
+
+      const created = createdVariants[i];
+      if (!created) continue;
+
+      for (const fileId of payload.imageIds) {
+        const already = await tx.productImage.findFirst({
+          where: { productId, fileId },
+        });
+
+        if (already) {
+          await tx.productImage.update({
+            where: { id: already.id },
+            data: { variantId: created.id },
+          });
+          continue;
+        }
+
+        await tx.productImage.create({
+          data: {
+            productId,
+            fileId,
+            variantId: created.id,
+            sortOrder: sortOrder++,
+            isPrimary: false,
+          },
+        });
+      }
+    }
   }
 
   async findAll(query: GetProductsDto) {
@@ -121,18 +294,18 @@ export class ProductsService {
       ];
     }
 
-    if (query.categoryId) where.categoryId = query.categoryId;
+    // Matches products linked to the category through the join table, so a
+    // product filed under several categories is found under each of them.
+    if (query.categoryId) {
+      where.productCategories = { some: { categoryId: query.categoryId } };
+    }
     if (typeof query.isActive === 'boolean') where.isActive = query.isActive;
     if (typeof query.isFeatured === 'boolean') where.isFeatured = query.isFeatured;
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: {
-          category: true,
-          variants: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
-          images: { include: { file: true }, orderBy: { sortOrder: 'asc' } },
-        },
+        include: PRODUCT_INCLUDE,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
@@ -150,9 +323,7 @@ export class ProductsService {
     const product = await this.prisma.product.findUnique({
       where: { id },
       include: {
-        category: true,
-        variants: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
-        images: { include: { file: true }, orderBy: { sortOrder: 'asc' } },
+        ...PRODUCT_INCLUDE,
         reviews: {
           where: { isApproved: true },
           include: {
@@ -193,31 +364,56 @@ export class ProductsService {
       if (existingSlug) throw new BadRequestException('Product slug already exists');
     }
 
-    if (dto.categoryId) {
-      const category = await this.prisma.category.findUnique({
-        where: { id: dto.categoryId },
+    // Categories are only touched when the caller actually sends them, so a
+    // partial update cannot silently unlink a product from its categories.
+    const categoryIds = this.resolveCategoryIds(dto);
+    let primaryCategoryId: string | null | undefined;
+
+    if (categoryIds !== undefined) {
+      await this.assertCategoriesExist(categoryIds);
+      primaryCategoryId = this.resolvePrimaryCategoryId(
+        dto.primaryCategoryId,
+        categoryIds,
+      );
+    } else if (dto.primaryCategoryId !== undefined) {
+      const current = await this.prisma.productCategory.findMany({
+        where: { productId: id },
+        select: { categoryId: true },
       });
-      if (!category) throw new NotFoundException('Category not found');
+      primaryCategoryId = this.resolvePrimaryCategoryId(
+        dto.primaryCategoryId,
+        current.map((c) => c.categoryId),
+      );
     }
 
-    const product = await this.prisma.product.update({
-      where: { id },
-      data: {
-        name: dto.name,
-        slug: dto.slug,
-        shortDescription: dto.shortDescription,
-        description: dto.description,
-        categoryId: dto.categoryId,
-        isActive: dto.isActive,
-        isFeatured: dto.isFeatured,
-        seoTitle: dto.seoTitle,
-        seoDescription: dto.seoDescription,
-      },
-      include: {
-        category: true,
-        variants: { orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }] },
-        images: { include: { file: true }, orderBy: { sortOrder: 'asc' } },
-      },
+    await this.prisma.$transaction(async (tx) => {
+      if (categoryIds !== undefined) {
+        await tx.productCategory.deleteMany({ where: { productId: id } });
+
+        if (categoryIds.length) {
+          await tx.productCategory.createMany({
+            data: categoryIds.map((categoryId) => ({ productId: id, categoryId })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      await tx.product.update({
+        where: { id },
+        data: {
+          name: dto.name,
+          slug: dto.slug,
+          shortDescription: dto.shortDescription,
+          description: dto.description,
+          isActive: dto.isActive,
+          isFeatured: dto.isFeatured,
+          seoTitle: dto.seoTitle,
+          seoDescription: dto.seoDescription,
+          ...(primaryCategoryId !== undefined
+            ? { primaryCategoryId, categoryId: primaryCategoryId }
+            : {}),
+        },
+      });
     });
 
     await this.activityLogsService.create({
@@ -225,9 +421,10 @@ export class ProductsService {
       action: 'PRODUCT_UPDATED',
       entity: 'Product',
       entityId: id,
+      metadata: { categoryIds, primaryCategoryId },
     });
 
-    return product;
+    return this.findOne(id);
   }
 
   async addImage(productId: string, fileId: string, adminId?: string) {

@@ -2,17 +2,39 @@
 
 import Link from "next/link";
 import { Trash2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import { ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { PriceBlock } from "@/components/product/price-block";
 import { useHydrated } from "@/hooks/use-hydrated";
+import { storefrontService } from "@/services/storefront.service";
 import { useRecentlyViewedStore } from "@/stores/recently-viewed-store";
+import type { Product } from "@/types/product";
 
 export function RecentlyViewedSection() {
   const hydrated = useHydrated();
 
   const items = useRecentlyViewedStore((state) => state.items);
   const clear = useRecentlyViewedStore((state) => state.clear);
+
+  // The store caches the price at view time; a discount started since then would
+  // otherwise be shown at the old price.
+  const productIds = items.map((i) => i.productId);
+
+  const { data: priced } = useQuery<Product[]>({
+    queryKey: ["recently-viewed-prices", productIds.join(",")],
+    queryFn: () => storefrontService.priceProducts(productIds),
+    enabled: hydrated && productIds.length > 0,
+    staleTime: 60_000,
+  });
+
+  const pricingFor = (productId: string) => {
+    const p = priced?.find((x) => x.id === productId);
+    if (!p) return null;
+    const v = p.variants.find((x) => x.isDefault) || p.variants[0];
+    return v?.pricing ?? null;
+  };
 
   if (!hydrated || !items.length) {
     return null;
@@ -59,9 +81,20 @@ export function RecentlyViewedSection() {
                 {item.name}
               </h3>
 
-              <p className="mt-3 text-xl font-bold text-black">
-                ${item.price.toFixed(2)}
-              </p>
+              {(() => {
+                const pricing = pricingFor(item.productId);
+
+                return pricing ? (
+                  <div className="mt-3">
+                    <PriceBlock pricing={pricing} size="sm" showCountdown={false} />
+                  </div>
+                ) : (
+                  // Fallback while live prices load.
+                  <p className="mt-3 text-xl font-bold text-black">
+                    ${item.price.toFixed(2)}
+                  </p>
+                );
+              })()}
 
               <div className="mt-5">
                 <ButtonLink href={`/products/${item.slug}`} fullWidth>

@@ -75,7 +75,10 @@ export interface Category {
   createdAt: string;
   updatedAt: string;
   children?: Category[];
-  _count?: { products: number };
+  imageId?: string | null;
+  image?: FileAsset | null;
+  sortOrder?: number;
+  _count?: { products: number; productCategories?: number };
 }
 
 // ─── Product ──────────────────────────────────────────────────────────────────
@@ -86,38 +89,61 @@ export interface ProductImage {
   variantId?: string | null;
   isPrimary: boolean;
   sortOrder: number;
-  file: { url: string };
+  file: FileAsset;
 }
 
 export interface ProductVariant {
   id: string;
   productId: string;
-  name: string;
-  sku?: string;
-  plu?: string;
-  barcode?: string;
-  posProductId?: string;
+  name?: string | null;
+  sku?: string | null;
+  plu?: string | null;
+  barcode?: string | null;
+  posProductId?: string | null;
   price: number;
-  costPrice?: number;
-  comparePrice?: number;
+  costPrice?: number | null;
+  /** Struck-through "was" price. Matches the API's compareAtPrice. */
+  compareAtPrice?: number | null;
+  weight?: number | null;
   stock: number;
+  /** Backorder: allows ordering at zero stock. */
+  allowBackorder: boolean;
+  backorderMessage?: string | null;
+  availabilityDate?: string | null;
   isDefault: boolean;
   isActive: boolean;
   attributes?: Record<string, string>;
   product?: Product;
+  /** Server-computed price, present on storefront-facing payloads. */
+  pricing?: PricedResult;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductCategoryLink {
+  id: string;
+  categoryId: string;
+  category: Category;
 }
 
 export interface Product {
   id: string;
   name: string;
   slug: string;
+  shortDescription?: string;
   description?: string;
+  /** @deprecated kept for one release; use productCategories/primaryCategory */
   categoryId?: string;
+  /** @deprecated */
   category?: Category;
+  primaryCategoryId?: string | null;
+  primaryCategory?: Category | null;
+  /** A product may belong to many categories. */
+  productCategories?: ProductCategoryLink[];
   isActive: boolean;
   isFeatured: boolean;
+  seoTitle?: string;
+  seoDescription?: string;
   images: ProductImage[];
   variants: ProductVariant[];
   _count?: { variants: number; reviews: number };
@@ -225,11 +251,153 @@ export interface PaginatedResponse<T> {
 
 // ─── File ─────────────────────────────────────────────────────────────────────
 
-export interface UploadedFile {
- id: string;
+/**
+ * A stored media asset. `title` is always populated by the API (it falls back
+ * to the original filename), so the admin can always show a human label.
+ */
+export interface FileAsset {
+  id: string;
   url: string;
-  filename: string;
-  mimetype: string;
+  fileName: string;
+  mimeType: string;
   size: number;
+  storageType: 'LOCAL' | 'SUPABASE';
+  title: string;
+  altText?: string | null;
+  caption?: string | null;
+  entity?: string | null;
+  entityId?: string | null;
   createdAt: string;
+  updatedAt?: string;
+}
+
+/** @deprecated use FileAsset */
+export type UploadedFile = FileAsset;
+
+export interface FileReferences {
+  productImages: number;
+  categories: number;
+  total: number;
+}
+
+// ─── Pricing / Discounts ──────────────────────────────────────────────────────
+
+export type DiscountType = 'PERCENTAGE' | 'FIXED';
+export type DiscountStatus = 'active' | 'scheduled' | 'expired' | 'inactive' | 'archived';
+
+export interface AppliedDiscount {
+  discountId: string;
+  label: string | null;
+  type: DiscountType;
+  value: number;
+  amount: number;
+}
+
+/** Mirrors the API's PricedResult - the single source of truth for money. */
+export interface PricedResult {
+  variantId: string;
+  regularPrice: number;
+  finalPrice: number;
+  discountAmount: number;
+  discountPercent: number;
+  onSale: boolean;
+  appliedDiscounts: AppliedDiscount[];
+  discountId: string | null;
+  discountLabel: string | null;
+  expiresAt: string | null;
+}
+
+export interface DiscountTarget {
+  id: string;
+  targetType: 'PRODUCT' | 'VARIANT' | 'CATEGORY';
+  targetId: string;
+  productId?: string | null;
+  variantId?: string | null;
+  categoryId?: string | null;
+  product?: { id: string; name: string; slug: string } | null;
+  variant?: { id: string; name: string | null; sku: string | null; productId: string } | null;
+  category?: { id: string; name: string; slug: string } | null;
+}
+
+export interface Discount {
+  id: string;
+  name: string;
+  description?: string | null;
+  publicLabel?: string | null;
+  type: DiscountType;
+  value: number;
+  startsAt: string;
+  endsAt?: string | null;
+  isActive: boolean;
+  minOrderAmount?: number | null;
+  maxDiscountAmount?: number | null;
+  priority: number;
+  stackable: boolean;
+  createdByAdminId?: string | null;
+  archivedAt?: string | null;
+  notificationsEnqueuedAt?: string | null;
+  targets: DiscountTarget[];
+  status?: DiscountStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DiscountPreviewItem {
+  variantId: string;
+  variantName: string | null;
+  sku: string | null;
+  productId: string;
+  productName: string;
+  productSlug: string;
+  regularPrice: number;
+  finalPrice: number;
+  discountAmount: number;
+  discountPercent: number;
+}
+
+export interface DiscountPreview {
+  discountId: string;
+  totalAffectedVariants: number;
+  truncated: boolean;
+  estimatedWishlistNotifications: number;
+  items: DiscountPreviewItem[];
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+export type NotificationStatus = 'PENDING' | 'SENT' | 'FAILED';
+
+export interface NotificationRow {
+  id: string;
+  customerId: string;
+  channel: 'EMAIL' | 'IN_APP';
+  type: 'WISHLIST_SALE';
+  status: NotificationStatus;
+  discountId?: string | null;
+  productId?: string | null;
+  variantId?: string | null;
+  attempts: number;
+  error?: string | null;
+  sentAt?: string | null;
+  createdAt: string;
+  payload?: {
+    productName: string;
+    variantName: string | null;
+    oldPrice: number;
+    newPrice: number;
+    discountPercent: number;
+    productUrl: string;
+  } | null;
+  customer?: { id: string; email: string | null; firstName: string | null; lastName: string | null };
+  discount?: { id: string; name: string; publicLabel: string | null } | null;
+  product?: { id: string; name: string; slug: string } | null;
+  variant?: { id: string; name: string | null } | null;
+}
+
+export interface NotificationStats {
+  pending: number;
+  sent: number;
+  failed: number;
+  customersNotified: number;
+  total: number;
 }

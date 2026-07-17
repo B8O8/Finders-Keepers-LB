@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Navbar } from "@/components/layout/navbar";
@@ -11,7 +12,9 @@ import { useProduct, useProducts } from "@/features/products/hooks";
 import { productReviewsService } from "@/services/product-reviews.service";
 import { useAuthStore } from "@/stores/auth-store";
 import { useCartStore } from "@/stores/cart-store";
+import { PriceBlock, StockBadge } from "@/components/product/price-block";
 import { useRecentlyViewedStore } from "@/stores/recently-viewed-store";
+import { getPrimaryCategory, getProductCategories } from "@/lib/category";
 import type { ProductVariant } from "@/types/product";
 
 export function ProductDetails({ slug }: { slug: string }) {
@@ -60,10 +63,16 @@ export function ProductDetails({ slug }: { slug: string }) {
     });
   }, [product, addRecentlyViewed]);
 
+  // Breadcrumb / eyebrow / related-products all key off the same resolved
+  // category, so the page can never claim one category and recommend from
+  // another.
+  const primaryCategory = getPrimaryCategory(product);
+  const allCategories = getProductCategories(product);
+
   const { data: relatedProducts, isLoading: relatedLoading } = useProducts({
     page: 1,
     limit: 4,
-    categorySlug: product?.category?.slug,
+    categorySlug: primaryCategory?.slug,
   });
 
   const filteredRelatedProducts =
@@ -88,6 +97,12 @@ export function ProductDetails({ slug }: { slug: string }) {
 
   const increaseQuantity = () => {
     if (!selectedVariant) return;
+
+    // A backorderable variant has no stock ceiling; otherwise stock is the cap.
+    if (selectedVariant.allowBackorder) {
+      setQuantity((prev) => prev + 1);
+      return;
+    }
 
     setQuantity((prev) => Math.min(selectedVariant.stock, prev + 1));
   };
@@ -132,9 +147,33 @@ export function ProductDetails({ slug }: { slug: string }) {
         </div>
 
         <div className="flex flex-col justify-center">
-          <p className="mb-4 text-xs font-bold uppercase tracking-[0.35em] text-[#b08d2c] lg:text-sm lg:tracking-[0.4em]">
-            {product.category?.name || "Finders Keepers"}
-          </p>
+          {/* Breadcrumb follows the primary category only. The product's other
+              categories are listed separately below, so a product in five
+              categories doesn't produce a five-deep nonsense trail. */}
+          <nav aria-label="Breadcrumb" className="mb-4">
+            <ol className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.35em] text-[#b08d2c] lg:text-sm lg:tracking-[0.4em]">
+              <li>
+                <Link href="/products" className="transition-colors hover:text-black">
+                  Finders Keepers
+                </Link>
+              </li>
+              {primaryCategory && (
+                <>
+                  <li aria-hidden="true" className="text-black/25">
+                    /
+                  </li>
+                  <li>
+                    <Link
+                      href={`/category/${primaryCategory.slug}`}
+                      className="transition-colors hover:text-black"
+                    >
+                      {primaryCategory.name}
+                    </Link>
+                  </li>
+                </>
+              )}
+            </ol>
+          </nav>
 
           <h1 className="text-4xl font-semibold tracking-tight text-black lg:text-5xl">
             {product.name}
@@ -145,9 +184,39 @@ export function ProductDetails({ slug }: { slug: string }) {
             <span>({product.reviewStats?.totalReviews || 0} reviews)</span>
           </div>
 
-          <p className="mt-7 text-3xl font-bold text-black lg:mt-8 lg:text-4xl">
-            ${Number(selectedVariant.price).toFixed(2)}
-          </p>
+          {/* Every category this product belongs to, each independently
+              browsable. Shown only when there's more than the breadcrumb
+              already conveys. */}
+          {allCategories.length > 1 && (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="text-xs uppercase tracking-wider text-neutral-400">
+                Also in
+              </span>
+              {allCategories
+                .filter((category) => category.id !== primaryCategory?.id)
+                .map((category) => (
+                  <Link
+                    key={category.id}
+                    href={`/category/${category.slug}`}
+                    className="rounded-full border border-black/10 bg-white px-3 py-1 text-xs text-neutral-700 transition-colors hover:border-black/30 hover:text-black"
+                  >
+                    {category.name}
+                  </Link>
+                ))}
+            </div>
+          )}
+
+          {/* Price always comes from the server-computed pricing when present,
+              so the detail page can never disagree with the cart or the order. */}
+          <div className="mt-7 lg:mt-8">
+            {selectedVariant.pricing ? (
+              <PriceBlock pricing={selectedVariant.pricing} size="lg" />
+            ) : (
+              <p className="text-3xl font-bold text-black lg:text-4xl">
+                ${Number(selectedVariant.price).toFixed(2)}
+              </p>
+            )}
+          </div>
 
           <p className="mt-5 max-w-xl text-base leading-8 text-neutral-600 lg:mt-6 lg:text-lg">
             {product.description || product.shortDescription}
@@ -183,12 +252,43 @@ export function ProductDetails({ slug }: { slug: string }) {
             </div>
           </div>
 
-          <div className="mt-6 text-sm text-neutral-500 lg:mt-8">
+          {/* Out-of-stock products stay visible and, when backordering is
+              enabled, remain orderable. */}
+          <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-neutral-500 lg:mt-8">
             {selectedVariant.stock > 0 ? (
               <span>{selectedVariant.stock} available</span>
             ) : (
-              <span className="text-red-600">Out of stock</span>
+              <>
+                <StockBadge
+                  inStock={false}
+                  allowBackorder={!!selectedVariant.allowBackorder}
+                  backorderMessage={selectedVariant.backorderMessage}
+                />
+                {selectedVariant.allowBackorder ? (
+                  <span className="text-blue-700">
+                    {selectedVariant.backorderMessage ||
+                      "This item is made to order and will ship when available."}
+                  </span>
+                ) : (
+                  <span className="text-red-600">
+                    Currently unavailable - check back soon.
+                  </span>
+                )}
+              </>
             )}
+
+            {selectedVariant.stock <= 0 &&
+              selectedVariant.allowBackorder &&
+              selectedVariant.availabilityDate && (
+                <span className="text-neutral-500">
+                  Estimated{" "}
+                  {new Date(selectedVariant.availabilityDate).toLocaleDateString("en-GB", {
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                  })}
+                </span>
+              )}
           </div>
 
           <div className="mt-7 lg:mt-8">
@@ -217,7 +317,9 @@ export function ProductDetails({ slug }: { slug: string }) {
                 variant="ghost"
                 size="sm"
                 disabled={
-                  selectedVariant.stock <= 0 || quantity >= selectedVariant.stock
+                  // With backorder enabled there is no stock ceiling.
+                  !selectedVariant.allowBackorder &&
+                  (selectedVariant.stock <= 0 || quantity >= selectedVariant.stock)
                 }
                 onClick={increaseQuantity}
                 className="h-12 w-12 rounded-none border-l border-black/10 px-0 text-xl lg:h-14 lg:w-14"
@@ -231,21 +333,28 @@ export function ProductDetails({ slug }: { slug: string }) {
             type="button"
             size="lg"
             fullWidth
-            disabled={selectedVariant.stock <= 0}
+            // Blocked only when it is genuinely unavailable: out of stock AND
+            // backordering is off. A backorderable item stays purchasable.
+            disabled={selectedVariant.stock <= 0 && !selectedVariant.allowBackorder}
             onClick={() =>
               addItem({
                 productId: product.id,
                 variantId: selectedVariant.id,
                 name: product.name,
                 image: mainImage?.file.url || "/logo.jpg",
-                price: Number(selectedVariant.price),
+                // Display-only: checkout always re-prices server-side.
+                price: selectedVariant.pricing?.finalPrice ?? Number(selectedVariant.price),
                 quantity,
                 variantName: selectedVariant.name || undefined,
               })
             }
             className="mt-8 lg:mt-10 lg:w-fit"
           >
-            Add To Cart
+            {selectedVariant.stock <= 0
+              ? selectedVariant.allowBackorder
+                ? "Order Now (Backorder)"
+                : "Out Of Stock"
+              : "Add To Cart"}
           </Button>
         </div>
       </section>

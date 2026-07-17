@@ -201,6 +201,67 @@ docker compose exec postgres pg_dump -U fkadmin finders_keepers > backup_$(date 
 cat backup.sql | docker compose exec -T postgres psql -U fkadmin finders_keepers
 ```
 
+---
+
+## Uploaded media (self-hosted)
+
+Since the move off Supabase, uploaded images are stored **on this server** in the
+`finders-keepers_uploads` Docker named volume, mounted at `/app/uploads` inside
+the `api` container, and served read-only at
+`https://api.finderskeeperslb.com/uploads/...`.
+
+**Why a named volume:** it is independent of the container lifecycle, so images
+survive `docker compose up --build`, container replacement, application updates
+and server restarts. Files are *never* written to the container filesystem
+itself, which is disposable.
+
+**Ownership & permissions.** The `api` process runs as **root** inside its
+container, so it owns `/app/uploads` and can write there with no host-side
+`chown` required. Uploaded files are written mode **0644** (readable, never
+executable) and always with a server-generated UUID filename, so a malicious
+filename cannot traverse directories or overwrite anything. Do not `chmod -R
+777` the volume; it needs no host-level permission changes at all.
+
+**Inspect the volume:**
+```bash
+docker volume inspect finders-keepers_uploads
+docker compose exec api ls -la /app/uploads
+```
+
+**Back up uploaded media** (run alongside the database backup):
+```bash
+cd ~/Finders-Keepers-LB
+docker run --rm \
+  -v finders-keepers_uploads:/data:ro \
+  -v "$PWD":/backup \
+  alpine tar czf /backup/uploads_$(date +%F).tgz -C /data .
+```
+
+**Restore uploaded media:**
+```bash
+docker run --rm \
+  -v finders-keepers_uploads:/data \
+  -v "$PWD":/backup \
+  alpine sh -c "rm -rf /data/* && tar xzf /backup/uploads_YYYY-MM-DD.tgz -C /data"
+docker compose restart api
+```
+
+**Verify persistence after a rebuild** (recommended once, after this release):
+```bash
+docker compose exec api ls /app/uploads/product | head
+docker compose up -d --build api
+docker compose exec api ls /app/uploads/product | head   # identical
+```
+
+> **Never** run `docker compose down -v` on this server: it destroys both
+> `pgdata` and `uploads`. Use `docker compose down` (without `-v`).
+
+**Legacy Supabase images.** Images uploaded before this release keep their
+original Supabase URLs and continue to render; they are marked
+`storageType = SUPABASE` in the database and are not migrated. The Supabase
+credentials remain in `.env` only so those old files can still be deleted from
+remote storage. New uploads never touch Supabase.
+
 **Stop everything:** `docker compose down`  (data survives in the `pgdata` volume)
 
 ---

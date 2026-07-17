@@ -42,6 +42,13 @@ services:
       MAIL_PASSWORD: ${MAIL_PASSWORD}
       MAIL_FROM: ${MAIL_FROM}
       FRONTEND_URL: https://${WEB_DOMAIN}
+      # Uploaded media: stored on a persistent named volume, served at /uploads
+      UPLOADS_DIR: /app/uploads
+      PUBLIC_MEDIA_BASE_URL: https://${API_DOMAIN}
+    volumes:
+      # Named volume => survives container rebuild/replacement and restarts.
+      # Backed up separately from the database (see DEPLOY.md).
+      - uploads:/app/uploads
     networks:
       - internal
 
@@ -63,6 +70,9 @@ services:
       args:
         NEXT_PUBLIC_API_URL: https://${API_DOMAIN}
         NEXT_PUBLIC_STORE_NAME: ${STORE_NAME}
+        # Baked in at build time (Next inlines NEXT_PUBLIC_* into the bundle).
+        # Drives canonical URLs, sitemap.xml and robots.txt.
+        NEXT_PUBLIC_SITE_URL: https://${WEB_DOMAIN}
     restart: unless-stopped
     depends_on:
       - api
@@ -93,6 +103,7 @@ services:
 
 volumes:
   pgdata:
+  uploads:
   caddy_data:
   caddy_config:
 
