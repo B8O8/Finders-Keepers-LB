@@ -129,7 +129,15 @@ services:
       API_DOMAIN: ${API_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount the DIRECTORY, not ./caddy/Caddyfile directly.
+      #
+      # Bind-mounting a single file binds that file's inode. `git pull` replaces
+      # the file (write new + rename) rather than editing it in place, so the
+      # container keeps seeing the ORIGINAL inode - i.e. the old config -
+      # forever. `caddy reload` then re-reads that stale file and cheerfully
+      # reports success while routing traffic by the previous config.
+      # Mounting the directory makes the replacement visible.
+      - ./caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
